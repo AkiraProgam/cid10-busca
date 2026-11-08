@@ -87,9 +87,8 @@ function pontuar(t, r){
   for(const w of r.w){
     if(w===t) return 90;                                               // palavra exata
     if(w.startsWith(t)) melhor = Math.max(melhor,80);                  // início da palavra
-    else if(t.length>=4 && melhor<50){                                 // tolera erro de digitação
-      const lim = t.length>=7 ? 2 : 1;
-      if(lev(t, w.slice(0,t.length))<=lim) melhor = 50;
+    else if(t.length>=6 && melhor<50){                                 // erro de digitação (só termos longos)
+      if(lev(t, w.slice(0,t.length))<=1) melhor = 50;
     }
   }
   return melhor;
