@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Busca CID-10</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--tx:#1d232b;--mut:#5f6b7a;--ac:#0b6bcb;--bd:#d9dee5}
+  @media(prefers-color-scheme:dark){:root{--bg:#14181d;--card:#1d232b;--tx:#e8ecf1;--mut:#9aa6b4;--ac:#5aa9ff;--bd:#323b46}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  main{max-width:760px;margin:0 auto;padding:20px 14px 40px}
+  h1{font-size:1.35rem;margin:0 0 4px}
+  .sub{color:var(--mut);font-size:.9rem;margin-bottom:14px}
+  input[type=search]{width:100%;padding:14px;font-size:1.1rem;border:2px solid var(--bd);border-radius:10px;background:var(--card);color:var(--tx)}
+  input[type=search]:focus{outline:none;border-color:var(--ac)}
+  .modos{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 4px;align-items:center;font-size:.9rem;color:var(--mut)}
+  button{background:var(--ac);color:#fff;border:1px solid var(--ac);border-radius:8px;padding:7px 12px;font-size:.9rem;cursor:pointer}
+  .modos button{background:transparent;color:var(--ac)}
+  .modos button.on{background:var(--ac);color:#fff}
+  .info{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:var(--mut);font-size:.85rem;margin:10px 2px}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;gap:12px;align-items:baseline;background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:11px 14px;margin-bottom:8px;cursor:pointer}
+  li:hover,li:focus{border-color:var(--ac);outline:none}
+  .cod{font-weight:700;color:var(--ac);min-width:64px;font-variant-numeric:tabular-nums}
+  mark{background:rgba(255,200,0,.35);color:inherit;border-radius:2px}
+  .vazio{text-align:center;color:var(--mut);padding:26px 0}
+  #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:8px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%}
+  footer{color:var(--mut);font-size:.8rem;margin-top:28px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Busca CID-10</h1>
+  <div class="sub">Digite o código (ex.: <b>Q12</b>) ou o início das palavras (ex.: <b>cat con</b>). Clique em um resultado ou pressione Enter para copiar.</div>
+  <input id="q" type="search" placeholder="Código ou descrição…" autocomplete="off" autofocus>
+  <div class="modos" role="group" aria-label="O que copiar">
+    <span>Copiar:</span>
+    <button data-m="codigo">Só código</button>
+    <button data-m="descricao">Só descrição</button>
+    <button data-m="ambos">Código + descrição</button>
+  </div>
+  <div class="info"><span id="total"></span><span id="cont"></span></div>
+  <ul id="res"></ul>
+  <footer>Base: CID-10 (DATASUS) · funciona offline</footer>
+</main>
+<div id="toast"></div>
+
+<script>
+/* Dados inseridos automaticamente por build.py. Não edite esta linha à mão. */
+const DADOS = /*__DADOS__*/[];
+
+const MAX = 20, CHAVE_MODO = "cid10_modo";
+
+/* ---------- utilidades ---------- */
+const norm = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function lev(a,b){ // distância de Levenshtein
+  if(a===b) return 0;
+  let p = Array.from({length:b.length+1},(_,i)=>i);
+  for(let i=1;i<=a.length;i++){
+    const c=[i];
+    for(let j=1;j<=b.length;j++)
+      c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1));
+    p=c;
+  }
+  return p[b.length];
+}
+
+/* ---------- preparação dos registros ---------- */
+const registros = DADOS.map(r => {
+  const d = norm(r.descricao);
+  return {
+    codigo: r.codigo,
+    descricao: r.descricao,
+    c: norm(r.codigo).replace(/\./g,""),
+    d,
+    w: d.split(/[^a-z0-9]+/).filter(Boolean)   // palavras da descrição
+  };
+});
+
+/* ---------- busca (só início de palavra) ---------- */
+function pontuar(t, r){
+  if(/\d/.test(t) && r.c.startsWith(t.replace(/\./g,""))) return 100;   // código
+  let melhor = 0;
+  for(const w of r.w){
+    if(w===t) return 90;                                               // palavra exata
+    if(w.startsWith(t)) melhor = Math.max(melhor,80);                  // início da palavra
+    else if(t.length>=4 && melhor<50){                                 // tolera erro de digitação
+      const lim = t.length>=7 ? 2 : 1;
+      if(lev(t, w.slice(0,t.length))<=lim) melhor = 50;
+    }
+  }
+  return melhor;
+}
+
+function buscar(texto){
+  const toks = norm(texto).trim().split(/\s+/).filter(Boolean);
+  if(!toks.length) return null;
+  const achados = [];
+  for(const r of registros){
+    let total = 0, ok = true;
+    for(const t of toks){
+      const s = pontuar(t,r);
+      if(!s){ ok=false; break; }
+      total += s;
+    }
+    if(!ok) continue;
+    if(r.w[0] && r.w[0].startsWith(toks[0])) total += 15;             // começa pela 1ª palavra
+    total -= r.d.length*0.05;                                          // descrições curtas primeiro
+    achados.push({r,total});
+  }
+  achados.sort((a,b)=>b.total-a.total);
+  return {lista: achados.slice(0,MAX).map(x=>x.r), total: achados.length, toks};
+}
+
+/* ---------- destaque (só no início das palavras) ---------- */
+function destacar(texto, toks){
+  const ch = [...texto];
+  const n = ch.map(c => norm(c));
+  const marc = new Array(ch.length).fill(false);
+  const alnum = c => /[a-z0-9]/.test(c);
+  for(let i=0;i<ch.length;i++){
+    if(!alnum(n[i] || "")) continue;
+    if(i>0 && alnum(n[i-1] || "")) continue;                           // não é início de palavra
+    for(const t of toks){
+      let ok = true;
+      for(let k=0;k<t.length;k++) if(n[i+k]!==t[k]){ ok=false; break; }
+      if(ok) for(let k=0;k<t.length;k++) marc[i+k]=true;
+    }
+  }
+  let s="", dentro=false;
+  ch.forEach((c,i)=>{
+    if(marc[i] && !dentro){ s+="<mark>"; dentro=true; }
+    if(!marc[i] && dentro){ s+="</mark>"; dentro=false; }
+    s+=esc(c);
+  });
+  return s + (dentro ? "</mark>" : "");
+}
+
+/* ---------- modo de cópia ---------- */
+let modo = "codigo";
+try{ modo = localStorage.getItem(CHAVE_MODO) || "codigo"; }catch(_){}
+
+function textoCopia(r){
+  if(modo==="codigo") return r.codigo;
+  if(modo==="descricao") return r.descricao;
+  return r.codigo+" - "+r.descricao;
+}
+
+function marcarModo(){
+  document.querySelectorAll(".modos button").forEach(b=>b.classList.toggle("on", b.dataset.m===modo));
+}
+
+document.querySelectorAll(".modos button").forEach(b=>b.addEventListener("click",()=>{
+  modo = b.dataset.m;
+  try{ localStorage.setItem(CHAVE_MODO, modo); }catch(_){}
+  marcarModo();
+  aviso("Ao clicar, copia " + ({codigo:"só o código",descricao:"só a descrição",ambos:"código + descrição"})[modo]);
+}));
+
+async function copiar(t){
+  try{ await navigator.clipboard.writeText(t); return true; }
+  catch(_){
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position="fixed"; ta.style.opacity="0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try{ ok = document.execCommand("copy"); }catch(_){}
+    ta.remove();
+    return ok;
+  }
+}
+
+async function copiarRegistro(r){
+  if(!r) return;
+  const t = textoCopia(r);
+  const ok = await copiar(t);
+  const curto = t.length>48 ? t.slice(0,45)+"…" : t;
+  aviso(ok ? "Copiado: "+curto : "Não foi possível copiar");
+}
+
+/* ---------- interface ---------- */
+const q = document.getElementById("q");
+const ul = document.getElementById("res");
+const cont = document.getElementById("cont");
+let atual = [];
+
+function mostrar(){
+  const r = q.value.trim() ? buscar(q.value) : null;
+  if(!r){
+    atual = []; ul.innerHTML = ""; cont.textContent = "";
+    return;
+  }
+  atual = r.lista;
+  if(!r.lista.length){
+    ul.innerHTML = '<div class="vazio">Nenhum resultado. Tente o início das palavras (ex.: "cat con").</div>';
+    cont.textContent = "";
+    return;
+  }
+  cont.textContent = r.total>MAX ? `Mostrando ${MAX} de ${r.total}` : `${r.total} resultado(s)`;
+  ul.innerHTML = r.lista.map((x,i)=>
+    `<li data-i="${i}" tabindex="0"><span class="cod">${esc(x.codigo)}</span><span>${destacar(x.descricao,r.toks)}</span></li>`
+  ).join("");
+}
+
+let timer;
+q.addEventListener("input",()=>{ clearTimeout(timer); timer=setTimeout(mostrar,120); });
+q.addEventListener("keydown",e=>{
+  if(e.key==="Enter"){
+    const r = buscar(q.value);
+    if(r && r.lista.length) copiarRegistro(r.lista[0]);
+  }
+});
+
+ul.addEventListener("click",e=>{
+  const li = e.target.closest("li"); if(!li) return;
+  copiarRegistro(atual[+li.dataset.i]);
+});
+ul.addEventListener("keydown",e=>{
+  if(e.key!=="Enter") return;
+  const li = e.target.closest("li"); if(!li) return;
+  copiarRegistro(atual[+li.dataset.i]);
+});
+
+function aviso(m){
+  const t = document.getElementById("toast");
+  t.textContent = m; t.style.opacity = 1;
+  clearTimeout(aviso.t);
+  aviso.t = setTimeout(()=>t.style.opacity=0, 1600);
+}
+
+/* ---------- início ---------- */
+document.getElementById("total").textContent =
+  registros.length.toLocaleString("pt-BR") + " códigos na base";
+marcarModo();
+q.focus();
+</script>
+</body>
+</html>
